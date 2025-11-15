@@ -217,27 +217,43 @@ class RepositoryManager:
             return self.github_username
         
         try:
-            # GitHub API支持token和Bearer两种方式
+            # 处理不同类型的token格式
+            token = self.github_token.strip()
+            
+            # 尝试Bearer token方式（适用于Fine-grained tokens）
             headers = {
-                'Authorization': f'Bearer {self.github_token}',
+                'Authorization': f'Bearer {token}',
                 'Accept': 'application/vnd.github.v3+json'
             }
             response = requests.get('https://api.github.com/user', headers=headers, timeout=10)
+            
             if response.status_code == 200:
                 self.github_username = response.json().get('login', '')
-                logger.info(f"获取GitHub用户名: {self.github_username}")
+                logger.info(f"✓ 获取GitHub用户名: {self.github_username}")
                 return self.github_username
-            else:
-                # 尝试使用token前缀
-                headers['Authorization'] = f'token {self.github_token}'
+            elif response.status_code == 401:
+                # Bearer方式失败，尝试token前缀（适用于classic tokens）
+                logger.info("Bearer token认证失败，尝试token前缀方式...")
+                headers['Authorization'] = f'token {token}'
                 response = requests.get('https://api.github.com/user', headers=headers, timeout=10)
                 if response.status_code == 200:
                     self.github_username = response.json().get('login', '')
-                    logger.info(f"获取GitHub用户名: {self.github_username}")
+                    logger.info(f"✓ 获取GitHub用户名: {self.github_username}")
                     return self.github_username
                 else:
-                    logger.error(f"获取GitHub用户名失败: {response.status_code} - {response.text}")
+                    logger.error(f"✗ 获取GitHub用户名失败 (状态码: {response.status_code})")
+                    logger.error(f"错误信息: {response.text}")
+                    if response.status_code == 403:
+                        logger.error("提示: Token可能没有足够的权限或已过期")
                     return None
+            elif response.status_code == 403:
+                logger.error("✗ GitHub API 403错误 - Token权限不足")
+                logger.error("请检查Token是否有 'read:user' 权限")
+                return None
+            else:
+                logger.error(f"✗ 获取GitHub用户名失败 (状态码: {response.status_code})")
+                logger.error(f"错误信息: {response.text}")
+                return None
         except Exception as e:
             logger.error(f"获取GitHub用户名异常: {e}")
             return None
@@ -335,9 +351,37 @@ class RepositoryManager:
                     error_msg = create_response.text
                     logger.error(f"✗ 创建GitHub仓库失败 (状态码: {create_response.status_code})")
                     logger.error(f"错误信息: {error_msg}")
-                    # 如果是403，可能是权限问题
+                    
+                    # 详细处理403错误
                     if create_response.status_code == 403:
-                        logger.error("提示: GitHub token可能没有创建仓库的权限，请检查token权限设置")
+                        logger.error("=" * 50)
+                        logger.error("GitHub 403 错误 - 权限不足")
+                        logger.error("=" * 50)
+                        logger.error("可能的原因：")
+                        logger.error("1. Token权限不足 - 需要 'repo' 权限")
+                        logger.error("2. Token已过期或被撤销")
+                        logger.error("3. Token格式不正确")
+                        logger.error("4. 仓库数量达到限制")
+                        logger.error("")
+                        logger.error("解决方案：")
+                        logger.error("1. 检查Token权限：")
+                        logger.error("   - 登录GitHub → Settings → Developer settings")
+                        logger.error("   - Personal access tokens → Tokens (classic)")
+                        logger.error("   - 确保勾选了 'repo' 权限")
+                        logger.error("2. 如果使用Fine-grained token，需要：")
+                        logger.error("   - 确保有 'Repository access' 权限")
+                        logger.error("   - 确保有 'Contents' 和 'Metadata' 权限")
+                        logger.error("3. 重新生成Token并更新config.json")
+                        logger.error("=" * 50)
+                        
+                        # 尝试检查仓库是否已存在（可能只是创建失败，但仓库已存在）
+                        try:
+                            check_resp = requests.get(check_url, headers=headers, timeout=10)
+                            if check_resp.status_code == 200:
+                                logger.info(f"✓ 仓库实际上已存在: {repo_url}")
+                                return repo_url
+                        except:
+                            pass
                     return None
             elif response.status_code == 401:
                 # 认证失败，尝试token前缀
