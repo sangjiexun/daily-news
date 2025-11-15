@@ -566,10 +566,18 @@ class RepositoryManager:
 class GitManager:
     """Git和Gitee管理器（使用git命令）"""
     
-    def __init__(self, github_token, gitee_token):
+    def __init__(self, github_token, gitee_token, config=None):
         self.github_token = github_token
         self.gitee_token = gitee_token
         self.repo_path = Path(".").absolute()
+        
+        # 配置选项（使用默认值）
+        self.config = config or {}
+        self.force_push = self.config.get('force_push', True)
+        self.retry_count = self.config.get('retry_count', 3)
+        self.timeout_seconds = self.config.get('timeout_seconds', 30)
+        self.enable_gitee = self.config.get('enable_gitee', True)
+        self.enable_github = self.config.get('enable_github', True)
         
         # 初始化仓库管理器
         self.repo_manager = RepositoryManager(github_token, gitee_token)
@@ -583,6 +591,9 @@ class GitManager:
         
         # 配置远程仓库
         self._setup_remotes(github_url, gitee_url)
+        
+        logger.info(f"GitManager已初始化: {self.repo_path}")
+        logger.info(f"配置: force_push={self.force_push}, retry_count={self.retry_count}, enable_github={self.enable_github}, enable_gitee={self.enable_gitee}")
     
     def _run_git(self, *args, check=True):
         """执行git命令"""
@@ -843,160 +854,139 @@ class GitManager:
                 logger.info(f"✓ 创建提交: {commit_message}")
                 
                 # 推送到GitHub (origin)
-                try:
-                    # 检查origin远程仓库是否存在
-                    remotes = self._run_git('remote', 'list', check=False)
-                    if 'origin' not in remotes:
-                        # origin不存在，尝试重新创建
-                        logger.warning("origin远程仓库不存在，尝试重新创建...")
-                        github_url, _ = self.repo_manager.ensure_repos_exist()
-                        if github_url:
-                            self._run_git('remote', 'add', 'origin', github_url)
-                            logger.info(f"创建origin远程仓库: {github_url}")
-                        else:
-                            logger.error("无法获取GitHub仓库URL，跳过GitHub推送")
-                            raise Exception("GitHub仓库URL不可用")
-                    
-                    original_url = self._run_git('remote', 'get-url', 'origin', check=False)
-                    logger.info(f"找到origin远程仓库: {original_url}")
-                    
-                    # 判断是否是GitHub仓库
-                    is_github = 'github.com' in original_url.lower()
-                    
-                    if is_github and self.github_token:
-                        # 准备带token的URL
-                        push_url = self._prepare_push_url(original_url, self.github_token)
-                        if push_url != original_url:
-                            self._run_git('remote', 'set-url', 'origin', push_url)
-                        
-                        # 确保使用main分支
-                        self._ensure_main_branch()
-                        
-                        # 首次推送前，检查远程分支并拉取合并
-                        try:
-                            # 获取远程分支信息
-                            self._run_git('fetch', 'origin', check=False)
-                            remote_branches = self._run_git('branch', '-r', check=False) or ""
-                            
-                            has_main = 'origin/main' in remote_branches
-                            has_master = 'origin/master' in remote_branches
-                            
-                            if remote_branches:
-                                logger.info(f"检测到远程仓库有内容 (main: {has_main}, master: {has_master})")
-                                # 优先使用main分支
-                                if has_main:
-                                    logger.info("远程使用main分支，正在拉取并合并到本地main分支...")
-                                    try:
-                                        self._run_git('fetch', 'origin', 'main', check=False)
-                                        self._run_git('merge', 'origin/main', '--allow-unrelated-histories', '--no-edit', check=False)
-                                        logger.info("✓ 已合并远程main分支内容到本地main分支")
-                                    except Exception as merge_error:
-                                        logger.warning(f"合并远程main分支失败: {merge_error}")
-                                elif has_master:
-                                    # 远程有master分支，拉取并重命名为main
-                                    logger.info("远程使用master分支，正在拉取并合并到本地main分支...")
-                                    try:
-                                        self._run_git('fetch', 'origin', 'master', check=False)
-                                        self._run_git('merge', 'origin/master', '--allow-unrelated-histories', '--no-edit', check=False)
-                                        logger.info("✓ 已合并远程master分支内容到本地main分支")
-                                    except:
-                                        logger.warning("拉取远程master分支失败，继续推送")
-                        except Exception as fetch_error:
-                            logger.debug(f"检查远程内容: {fetch_error}")
-                        
-                        # 推送到main分支
-                        logger.info("正在推送到GitHub main分支...")
-                        try:
-                            self._run_git('push', '-u', 'origin', 'main')
-                            logger.info("✓ 成功推送到GitHub (main分支)")
-                        except Exception as push_error:
-                            # 如果推送失败，可能是远程只有master分支
-                            logger.warning(f"推送到main分支失败，尝试推送到master分支...")
-                            try:
-                                self._run_git('push', '-u', 'origin', 'master')
-                                logger.info("✓ 成功推送到GitHub (master分支)")
-                            except Exception as push_master_error:
-                                # 如果master也失败，尝试强制推送到main
-                                logger.warning(f"推送到master分支也失败，尝试强制推送...")
-                                try:
-                                    self._run_git('push', '-f', 'origin', 'main')
-                                    logger.info("✓ 使用强制推送完成 (main分支)")
-                                except Exception as force_error:
-                                    logger.error(f"所有推送方式都失败: {force_error}")
-                        
-                        # 恢复原始URL（避免在配置中保存token）
-                        if push_url != original_url:
-                            self._run_git('remote', 'set-url', 'origin', original_url)
-                    elif is_github:
-                        # 没有token，尝试直接推送
-                        self._run_git('push', 'origin', 'main', check=False)
-                        logger.info("✓ 成功推送到GitHub（使用已保存的凭据）")
-                    else:
-                        logger.warning(f"origin远程仓库不是GitHub，跳过GitHub推送: {original_url}")
-                except Exception as e:
-                    logger.error(f"推送到GitHub失败: {e}")
+                if self.enable_github:
+                    self._push_to_github()
+                else:
+                    logger.info("GitHub推送已禁用")
                 
                 # 推送到Gitee
-                try:
-                    remotes = self._run_git('remote', 'list', check=False) or ""
-                    if 'gitee' not in remotes:
-                        # 如果没有gitee远程，尝试从origin推断或使用仓库管理器映射
-                        try:
-                            origin_url = self._run_git('remote', 'get-url', 'origin', check=False)
-                            # 如果是GitHub URL，尝试映射到Gitee URL
-                            if 'github.com' in origin_url.lower():
-                                # 使用仓库管理器的映射方法
-                                mapped_gitee_url = self.repo_manager._map_github_to_gitee(origin_url)
-                                if mapped_gitee_url:
-                                    # 准备带token的URL
-                                    gitee_url_with_token = self._prepare_push_url(mapped_gitee_url, self.gitee_token) if self.gitee_token else mapped_gitee_url
-                                    self._run_git('remote', 'add', 'gitee', gitee_url_with_token)
-                                    logger.info(f"自动创建gitee远程仓库（已从GitHub映射，已包含token）")
-                                else:
-                                    # 如果映射失败，尝试直接转换（使用相同的用户名）
-                                    parts = origin_url.replace('.git', '').split('github.com/')
-                                    if len(parts) > 1:
-                                        repo_path = parts[1]
-                                        # 提取仓库名
-                                        repo_name = repo_path.split('/')[-1] if '/' in repo_path else repo_path
-                                        # 使用Gitee用户名
-                                        gitee_username = self.repo_manager.get_gitee_username()
-                                        if gitee_username:
-                                            gitee_url = f'https://gitee.com/{gitee_username}/{repo_name}.git'
-                                            gitee_url_with_token = self._prepare_push_url(gitee_url, self.gitee_token) if self.gitee_token else gitee_url
-                                            self._run_git('remote', 'add', 'gitee', gitee_url_with_token)
-                                            logger.info(f"自动创建gitee远程仓库（已包含token）")
-                            else:
-                                logger.info("未找到gitee远程仓库，且无法从origin推断，跳过Gitee推送")
-                                return
-                        except Exception as e:
-                            logger.warning(f"无法创建gitee远程仓库: {e}")
-                            return
-                    
-                    # 确保URL中包含token
-                    current_url = self._run_git('remote', 'get-url', 'gitee', check=False)
-                    if self.gitee_token and '@' not in current_url:
-                        push_url = self._prepare_push_url(current_url, self.gitee_token)
-                        self._run_git('remote', 'set-url', 'gitee', push_url)
-                        logger.debug("Gitee URL已更新为包含token的版本")
-                    
-                    # 推送到Gitee
-                    try:
-                        self._run_git('push', '-u', 'gitee', 'main')
-                        logger.info("✓ 成功推送到Gitee")
-                    except Exception as push_error:
-                        # 如果设置上游失败，尝试直接推送
-                        try:
-                            self._run_git('push', 'gitee', 'main', check=False)
-                            logger.info("✓ 成功推送到Gitee")
-                        except:
-                            logger.warning("推送到Gitee失败")
-                except Exception as e:
-                    logger.error(f"推送到Gitee失败: {e}")
+                if self.enable_gitee:
+                    self._push_to_gitee()
+                else:
+                    logger.info("Gitee推送已禁用")
             else:
                 logger.info("没有更改需要提交")
         except Exception as e:
             logger.error(f"Git操作失败: {e}")
+    
+    def _push_to_github(self):
+        """推送到GitHub - 增强版本"""
+        try:
+            # 检查origin远程仓库是否存在
+            remotes = self._run_git('remote', 'list', check=False) or ""
+            if 'origin' not in remotes:
+                logger.warning("origin远程仓库不存在，跳过GitHub推送")
+                return
+            
+            original_url = self._run_git('remote', 'get-url', 'origin', check=False)
+            if not original_url or 'github.com' not in original_url.lower():
+                logger.warning(f"origin不是GitHub仓库，跳过: {original_url}")
+                return
+            
+            logger.info(f"正在推送到GitHub: {original_url}")
+            
+            # 准备带token的URL（临时使用）
+            push_url = original_url
+            if self.github_token:
+                push_url = self._prepare_push_url(original_url, self.github_token)
+                if push_url != original_url:
+                    self._run_git('remote', 'set-url', 'origin', push_url)
+            
+            # 尝试推送，支持重试
+            for attempt in range(self.retry_count):
+                try:
+                    # 尝试推送到main分支
+                    if self.force_push:
+                        self._run_git('push', '-f', 'origin', 'main')
+                        logger.info("✓ 成功强制推送到GitHub main分支")
+                    else:
+                        self._run_git('push', 'origin', 'main')
+                        logger.info("✓ 成功推送到GitHub main分支")
+                    break  # 成功，跳出重试循环
+                    
+                except subprocess.CalledProcessError as push_error:
+                    if attempt < self.retry_count - 1:
+                        logger.warning(f"GitHub推送失败，尝试重试 {attempt + 2}/{self.retry_count}...")
+                        import time
+                        time.sleep(2)  # 等待2秒后重试
+                        continue
+                    
+                    # 最后一次尝试，尝试master分支
+                    try:
+                        if self.force_push:
+                            self._run_git('push', '-f', 'origin', 'master')
+                            logger.info("✓ 成功强制推送到GitHub master分支")
+                        else:
+                            self._run_git('push', 'origin', 'master')
+                            logger.info("✓ 成功推送到GitHub master分支")
+                    except subprocess.CalledProcessError as master_error:
+                        logger.error(f"GitHub推送失败（尝试{self.retry_count}次后）: {master_error}")
+                        logger.error("提示: 可能需要手动处理分支冲突或检查Token权限")
+                        raise
+            
+            # 恢复原始URL（避免在配置中保存token）
+            if push_url != original_url:
+                self._run_git('remote', 'set-url', 'origin', original_url)
+                
+        except Exception as e:
+            logger.error(f"推送到GitHub失败: {e}")
+    
+    def _push_to_gitee(self):
+        """推送到Gitee - 增强版本"""
+        try:
+            # 检查gitee远程仓库是否存在
+            remotes = self._run_git('remote', 'list', check=False) or ""
+            if 'gitee' not in remotes:
+                logger.warning("gitee远程仓库不存在，跳过Gitee推送")
+                return
+            
+            gitee_url = self._run_git('remote', 'get-url', 'gitee', check=False)
+            if not gitee_url:
+                logger.warning("无法获取gitee远程仓库URL")
+                return
+            
+            logger.info("正在推送到Gitee...")
+            
+            # 确保URL中包含token
+            if self.gitee_token and '@' not in gitee_url:
+                push_url = self._prepare_push_url(gitee_url, self.gitee_token)
+                if push_url != gitee_url:
+                    self._run_git('remote', 'set-url', 'gitee', push_url)
+                    gitee_url = push_url
+            
+            # 尝试推送，支持重试
+            for attempt in range(self.retry_count):
+                try:
+                    # 尝试推送到main分支
+                    if self.force_push:
+                        self._run_git('push', '-f', 'gitee', 'main')
+                        logger.info("✓ 成功强制推送到Gitee main分支")
+                    else:
+                        self._run_git('push', 'gitee', 'main')
+                        logger.info("✓ 成功推送到Gitee main分支")
+                    break  # 成功，跳出重试循环
+                    
+                except subprocess.CalledProcessError as push_error:
+                    if attempt < self.retry_count - 1:
+                        logger.warning(f"Gitee推送失败，尝试重试 {attempt + 2}/{self.retry_count}...")
+                        import time
+                        time.sleep(2)  # 等待2秒后重试
+                        continue
+                    
+                    # 最后一次尝试，尝试master分支
+                    try:
+                        if self.force_push:
+                            self._run_git('push', '-f', 'gitee', 'master')
+                            logger.info("✓ 成功强制推送到Gitee master分支")
+                        else:
+                            self._run_git('push', 'gitee', 'master')
+                            logger.info("✓ 成功推送到Gitee master分支")
+                    except subprocess.CalledProcessError as master_error:
+                        logger.error(f"Gitee推送失败（尝试{self.retry_count}次后）: {master_error}")
+                        raise
+                    
+        except Exception as e:
+            logger.error(f"推送到Gitee失败: {e}")
 
 
 def daily_task():
@@ -1035,7 +1025,7 @@ def daily_task():
         # 初始化Git管理器（会自动创建仓库）
         try:
             logger.info("正在初始化Git管理器...")
-            git_manager = GitManager(github_token, gitee_token)
+            git_manager = GitManager(github_token, gitee_token, config)
             logger.info("Git管理器初始化成功")
         except Exception as e:
             logger.error(f"Git管理器初始化失败: {e}")
