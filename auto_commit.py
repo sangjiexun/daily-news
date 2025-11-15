@@ -302,7 +302,8 @@ class RepositoryManager:
                     'auto_init': True,  # 自动初始化仓库，创建README
                     'has_issues': True,
                     'has_projects': False,
-                    'has_wiki': False
+                    'has_wiki': False,
+                    'default_branch': 'master'  # 使用master作为默认分支
                 }
                 create_url = 'https://api.github.com/user/repos'
                 
@@ -459,18 +460,43 @@ class GitManager:
         try:
             self.repo = Repo(self.repo_path)
             logger.info(f"Git仓库初始化成功: {self.repo_path.absolute()}")
+            # 确保使用master分支
+            self._ensure_master_branch()
         except Exception as e:
             # 如果仓库不存在，自动初始化
             logger.info("本地Git仓库不存在，正在初始化...")
             try:
-                self.repo = Repo.init(self.repo_path)
-                logger.info("成功初始化本地Git仓库")
+                self.repo = Repo.init(self.repo_path, initial_branch='master')
+                logger.info("成功初始化本地Git仓库（使用master分支）")
             except Exception as init_error:
                 logger.error(f"初始化Git仓库失败: {init_error}")
                 raise
         
         # 配置远程仓库
         self._setup_remotes(github_url, gitee_url)
+    
+    def _ensure_master_branch(self):
+        """确保使用master分支"""
+        try:
+            # 检查当前分支
+            current_branch = self.repo.active_branch.name
+            if current_branch != 'master':
+                # 检查master分支是否存在
+                try:
+                    master_branch = self.repo.heads.master
+                    # 切换到master分支
+                    self.repo.head.reference = master_branch
+                    self.repo.head.reset(index=True, working_tree=True)
+                    logger.info(f"已切换到master分支")
+                except:
+                    # master分支不存在，创建它
+                    logger.info("创建master分支...")
+                    # 从当前分支创建master分支
+                    new_branch = self.repo.create_head('master', self.repo.head.commit)
+                    self.repo.head.reference = new_branch
+                    logger.info("已创建并切换到master分支")
+        except Exception as e:
+            logger.debug(f"确保master分支: {e}")
     
     def _setup_remotes(self, github_url, gitee_url):
         """配置远程仓库"""
@@ -646,6 +672,9 @@ class GitManager:
                             if push_url != original_url:
                                 origin.set_url(push_url)
                             
+                            # 确保使用master分支
+                            self._ensure_master_branch()
+                            
                             # 首次推送前，如果远程仓库有内容（auto_init创建的），先拉取
                             try:
                                 # 检查远程是否有内容
@@ -655,37 +684,44 @@ class GitManager:
                                     # 远程有内容，需要先拉取并合并
                                     logger.info("检测到远程仓库有初始内容，正在拉取并合并...")
                                     try:
-                                        self.repo.git.pull('origin', 'main', '--allow-unrelated-histories', '--no-edit')
+                                        # 优先使用master分支
+                                        self.repo.git.pull('origin', 'master', '--allow-unrelated-histories', '--no-edit')
                                     except:
                                         try:
-                                            self.repo.git.pull('origin', 'master', '--allow-unrelated-histories', '--no-edit')
+                                            # 如果master不存在，尝试main
+                                            self.repo.git.pull('origin', 'main', '--allow-unrelated-histories', '--no-edit')
                                         except:
                                             logger.warning("拉取远程内容失败，尝试强制推送")
                             except Exception as fetch_error:
                                 logger.debug(f"拉取远程内容: {fetch_error}")
                             
-                            # 首次推送需要指定分支
+                            # 推送到master分支
                             try:
-                                # 获取当前分支名
-                                current_branch = self.repo.active_branch.name
-                                # 使用git命令设置上游并推送
-                                self.repo.git.push('-u', 'origin', current_branch)
+                                # 确保当前在master分支
+                                if self.repo.active_branch.name != 'master':
+                                    try:
+                                        self.repo.head.reference = self.repo.heads.master
+                                    except:
+                                        # 如果master分支不存在，创建它
+                                        self.repo.create_head('master', self.repo.head.commit)
+                                        self.repo.head.reference = self.repo.heads.master
+                                
+                                # 使用git命令设置上游并推送到master分支
+                                self.repo.git.push('-u', 'origin', 'master')
                             except Exception as push_error:
                                 # 如果设置上游失败，尝试直接推送
                                 try:
-                                    current_branch = self.repo.active_branch.name
-                                    self.repo.git.push('origin', current_branch)
+                                    self.repo.git.push('origin', 'master')
                                 except Exception as push_error2:
                                     # 如果还是失败，尝试force push（仅在首次推送时）
                                     logger.warning(f"常规推送失败: {push_error2}")
                                     try:
-                                        current_branch = self.repo.active_branch.name
-                                        self.repo.git.push('-f', 'origin', current_branch)
+                                        self.repo.git.push('-f', 'origin', 'master')
                                         logger.info("使用强制推送完成首次推送")
                                     except:
                                         # 最后尝试默认推送
                                         origin.push()
-                            logger.info("✓ 成功推送到GitHub")
+                            logger.info("✓ 成功推送到GitHub (master分支)")
                             
                             # 恢复原始URL（避免在配置中保存token）
                             if push_url != original_url:
