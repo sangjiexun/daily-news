@@ -267,15 +267,21 @@ class RepositoryManager:
     
     def create_github_repo(self):
         """创建GitHub仓库"""
+        if not self.github_token:
+            logger.warning("GitHub token未提供，跳过GitHub仓库创建")
+            return None
+            
         username = self.get_github_username()
         if not username:
             logger.error("无法获取GitHub用户名，跳过创建仓库")
+            logger.error("提示: 请检查GitHub token是否正确，是否有足够的权限")
             return None
         
         repo_url = f"https://github.com/{username}/{self.repo_name}.git"
         
         # 检查仓库是否已存在
         try:
+            # 尝试Bearer token方式
             headers = {
                 'Authorization': f'Bearer {self.github_token}',
                 'Accept': 'application/vnd.github.v3+json'
@@ -284,11 +290,11 @@ class RepositoryManager:
             response = requests.get(check_url, headers=headers, timeout=10)
             
             if response.status_code == 200:
-                logger.info(f"GitHub仓库已存在: {repo_url}")
+                logger.info(f"✓ GitHub仓库已存在: {repo_url}")
                 return repo_url
             elif response.status_code == 404:
                 # 仓库不存在，创建新仓库
-                logger.info(f"正在创建GitHub仓库: {self.repo_name}")
+                logger.info(f"正在创建GitHub仓库: {self.repo_name} (用户: {username})")
                 create_data = {
                     'name': self.repo_name,
                     'description': 'Daily AI and Web3 News Collection - 每日AI和Web3资讯收集',
@@ -299,28 +305,60 @@ class RepositoryManager:
                     'has_wiki': False
                 }
                 create_url = 'https://api.github.com/user/repos'
+                
+                # 尝试Bearer token
                 create_response = requests.post(create_url, headers=headers, 
                                                json=create_data, timeout=10)
                 
                 if create_response.status_code == 201:
-                    logger.info(f"成功创建GitHub仓库: {repo_url}")
+                    logger.info(f"✓ 成功创建GitHub仓库: {repo_url}")
                     return repo_url
-                else:
-                    # 尝试使用token前缀
+                elif create_response.status_code == 401:
+                    # 认证失败，尝试token前缀
+                    logger.info("Bearer token认证失败，尝试token前缀方式...")
                     headers['Authorization'] = f'token {self.github_token}'
                     create_response = requests.post(create_url, headers=headers, 
                                                    json=create_data, timeout=10)
                     if create_response.status_code == 201:
-                        logger.info(f"成功创建GitHub仓库: {repo_url}")
+                        logger.info(f"✓ 成功创建GitHub仓库: {repo_url}")
                         return repo_url
                     else:
-                        logger.error(f"创建GitHub仓库失败: {create_response.status_code} - {create_response.text}")
+                        error_msg = create_response.text
+                        logger.error(f"✗ 创建GitHub仓库失败 (状态码: {create_response.status_code})")
+                        logger.error(f"错误信息: {error_msg}")
+                        if "name already exists" in error_msg.lower():
+                            logger.info("仓库可能已存在，尝试获取仓库URL...")
+                            return repo_url
                         return None
+                else:
+                    error_msg = create_response.text
+                    logger.error(f"✗ 创建GitHub仓库失败 (状态码: {create_response.status_code})")
+                    logger.error(f"错误信息: {error_msg}")
+                    # 如果是403，可能是权限问题
+                    if create_response.status_code == 403:
+                        logger.error("提示: GitHub token可能没有创建仓库的权限，请检查token权限设置")
+                    return None
+            elif response.status_code == 401:
+                # 认证失败，尝试token前缀
+                logger.info("Bearer token认证失败，尝试token前缀方式检查仓库...")
+                headers['Authorization'] = f'token {self.github_token}'
+                response = requests.get(check_url, headers=headers, timeout=10)
+                if response.status_code == 200:
+                    logger.info(f"✓ GitHub仓库已存在: {repo_url}")
+                    return repo_url
+                else:
+                    logger.error(f"检查GitHub仓库状态失败: {response.status_code} - {response.text}")
+                    return None
             else:
-                logger.error(f"检查GitHub仓库状态失败: {response.status_code}")
+                logger.error(f"检查GitHub仓库状态失败: {response.status_code} - {response.text}")
                 return None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"创建GitHub仓库网络异常: {e}")
+            return None
         except Exception as e:
             logger.error(f"创建GitHub仓库异常: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return None
     
     def create_gitee_repo(self):
@@ -374,12 +412,30 @@ class RepositoryManager:
         github_url = None
         gitee_url = None
         
+        logger.info("=" * 50)
+        logger.info("开始检查并创建远程仓库...")
+        
         if self.github_token:
+            logger.info("检查GitHub仓库...")
             github_url = self.create_github_repo()
+            if github_url:
+                logger.info(f"✓ GitHub仓库准备就绪: {github_url}")
+            else:
+                logger.warning("✗ GitHub仓库创建或检查失败")
+        else:
+            logger.warning("GitHub token未提供，跳过GitHub仓库检查")
         
         if self.gitee_token:
+            logger.info("检查Gitee仓库...")
             gitee_url = self.create_gitee_repo()
+            if gitee_url:
+                logger.info(f"✓ Gitee仓库准备就绪: {gitee_url}")
+            else:
+                logger.warning("✗ Gitee仓库创建或检查失败")
+        else:
+            logger.warning("Gitee token未提供，跳过Gitee仓库检查")
         
+        logger.info("=" * 50)
         return github_url, gitee_url
 
 
@@ -544,59 +600,76 @@ class GitManager:
                 # 推送到GitHub (origin)
                 try:
                     # 检查origin远程仓库是否存在
+                    origin = None
+                    original_url = None
                     try:
                         origin = self.repo.remote('origin')
                         original_url = origin.url
-                    except:
+                        logger.info(f"找到origin远程仓库: {original_url}")
+                    except Exception as remote_error:
                         # origin不存在，尝试重新创建
-                        logger.warning("origin远程仓库不存在，尝试重新创建...")
+                        logger.warning(f"origin远程仓库不存在 ({remote_error})，尝试重新创建...")
                         github_url, _ = self.repo_manager.ensure_repos_exist()
                         if github_url:
                             try:
-                                origin = self.repo.create_remote('origin', github_url)
+                                # 检查是否已经存在同名的远程仓库
+                                try:
+                                    existing_origin = self.repo.remote('origin')
+                                    existing_origin.set_url(github_url)
+                                    origin = existing_origin
+                                    logger.info(f"更新现有origin远程仓库URL: {github_url}")
+                                except:
+                                    # 不存在，创建新的
+                                    origin = self.repo.create_remote('origin', github_url)
+                                    logger.info(f"创建新的origin远程仓库: {github_url}")
                                 original_url = github_url
-                                logger.info(f"重新创建origin远程仓库: {github_url}")
                             except Exception as e:
                                 logger.error(f"无法创建origin远程仓库: {e}")
-                                raise
+                                logger.error("跳过GitHub推送，继续推送到Gitee")
+                                origin = None
                         else:
-                            logger.error("无法获取GitHub仓库URL，跳过GitHub推送")
-                            raise Exception("GitHub仓库URL不可用")
+                            logger.error("无法获取GitHub仓库URL")
+                            logger.error("提示: 请检查GitHub token是否正确，是否有创建仓库的权限")
+                            logger.error("跳过GitHub推送，继续推送到Gitee")
+                            origin = None
                     
-                    # 判断是否是GitHub仓库
-                    is_github = 'github.com' in original_url.lower()
-                    
-                    if is_github and self.github_token:
-                        # 准备带token的URL
-                        push_url = self._prepare_push_url(original_url, self.github_token)
-                        if push_url != original_url:
-                            origin.set_url(push_url)
+                    if origin and original_url:
+                        # 判断是否是GitHub仓库
+                        is_github = 'github.com' in original_url.lower()
                         
-                        # 首次推送需要指定分支
-                        try:
-                            # 获取当前分支名
-                            current_branch = self.repo.active_branch.name
-                            # 使用git命令设置上游并推送
-                            self.repo.git.push('-u', 'origin', current_branch)
-                        except Exception as push_error:
-                            # 如果设置上游失败，尝试直接推送
+                        if is_github and self.github_token:
+                            # 准备带token的URL
+                            push_url = self._prepare_push_url(original_url, self.github_token)
+                            if push_url != original_url:
+                                origin.set_url(push_url)
+                            
+                            # 首次推送需要指定分支
                             try:
+                                # 获取当前分支名
                                 current_branch = self.repo.active_branch.name
-                                self.repo.git.push('origin', current_branch)
-                            except:
-                                # 最后尝试默认推送
-                                origin.push()
-                        logger.info("成功推送到GitHub")
-                        
-                        # 恢复原始URL（避免在配置中保存token）
-                        if push_url != original_url:
-                            origin.set_url(original_url)
-                    elif is_github:
-                        # 没有token，尝试直接推送（可能使用已保存的凭据）
-                        origin.push()
-                        logger.info("成功推送到GitHub（使用已保存的凭据）")
+                                # 使用git命令设置上游并推送
+                                self.repo.git.push('-u', 'origin', current_branch)
+                            except Exception as push_error:
+                                # 如果设置上游失败，尝试直接推送
+                                try:
+                                    current_branch = self.repo.active_branch.name
+                                    self.repo.git.push('origin', current_branch)
+                                except:
+                                    # 最后尝试默认推送
+                                    origin.push()
+                            logger.info("✓ 成功推送到GitHub")
+                            
+                            # 恢复原始URL（避免在配置中保存token）
+                            if push_url != original_url:
+                                origin.set_url(original_url)
+                        elif is_github:
+                            # 没有token，尝试直接推送（可能使用已保存的凭据）
+                            origin.push()
+                            logger.info("✓ 成功推送到GitHub（使用已保存的凭据）")
+                        else:
+                            logger.warning(f"origin远程仓库不是GitHub，跳过GitHub推送: {original_url}")
                     else:
-                        logger.info(f"origin远程仓库不是GitHub，跳过GitHub推送: {original_url}")
+                        logger.warning("origin远程仓库不可用，跳过GitHub推送")
                 except Exception as e:
                     logger.error(f"推送到GitHub失败: {e}")
                 
