@@ -519,8 +519,14 @@ class GitManager:
             )
             return result.stdout.strip()
         except subprocess.CalledProcessError as e:
-            logger.error(f"Git命令失败: {' '.join(cmd)}")
-            logger.error(f"错误: {e.stderr}")
+            # 对于某些错误（如远程已存在），不记录为错误
+            error_msg = e.stderr.strip() if e.stderr else ""
+            if "already exists" in error_msg.lower():
+                # 远程已存在，这是正常情况，不记录为错误
+                logger.debug(f"Git命令提示: {' '.join(cmd)} - {error_msg}")
+            else:
+                logger.error(f"Git命令失败: {' '.join(cmd)}")
+                logger.error(f"错误: {error_msg}")
             if check:
                 raise
             return None
@@ -620,19 +626,33 @@ class GitManager:
                             logger.info(f"gitee远程仓库已配置（已包含token）")
                     except:
                         # 如果获取URL失败，尝试更新
-                        self._run_git('remote', 'set-url', 'gitee', gitee_url_with_token)
+                        self._run_git('remote', 'set-url', 'gitee', gitee_url_with_token, check=False)
                         logger.info(f"更新gitee远程仓库URL（已包含token）")
                 else:
                     # 如果不存在，创建它（使用带token的URL）
-                    self._run_git('remote', 'add', 'gitee', gitee_url_with_token)
-                    logger.info(f"创建gitee远程仓库（已包含token）")
+                    try:
+                        self._run_git('remote', 'add', 'gitee', gitee_url_with_token)
+                        logger.info(f"创建gitee远程仓库（已包含token）")
+                    except Exception as add_error:
+                        # 如果添加失败（可能已存在但检查时没发现），尝试更新
+                        error_str = str(add_error) if add_error else ""
+                        if "already exists" in error_str.lower() or "exit status 3" in error_str:
+                            logger.info("gitee远程仓库已存在，更新URL...")
+                            self._run_git('remote', 'set-url', 'gitee', gitee_url_with_token, check=False)
+                            logger.info(f"已更新gitee远程仓库URL（已包含token）")
+                        else:
+                            raise
             except Exception as e:
                 logger.warning(f"配置Gitee远程仓库失败: {e}")
                 # 如果添加失败，可能是已存在，尝试更新
-                try:
-                    self._run_git('remote', 'set-url', 'gitee', gitee_url_with_token, check=False)
-                    logger.info(f"已更新gitee远程仓库URL（已包含token）")
-                except:
+                error_str = str(e) if e else ""
+                if "already exists" in error_str.lower() or "exit status 3" in str(e):
+                    try:
+                        self._run_git('remote', 'set-url', 'gitee', gitee_url_with_token, check=False)
+                        logger.info(f"已更新gitee远程仓库URL（已包含token）")
+                    except:
+                        logger.warning("Gitee远程仓库配置失败，将在推送时处理")
+                else:
                     logger.warning("Gitee远程仓库配置失败，将在推送时处理")
     
     def _prepare_push_url(self, url, token):
