@@ -618,13 +618,43 @@ class GitManager:
                 has_changes = True
             
             if has_changes:
-                # 添加所有更改
+                # 确保在master分支
+                self._ensure_master_branch()
+                
+                # 添加所有更改（包括news_data目录）
                 self.repo.git.add(A=True)
+                
+                # 检查是否有news_data文件被添加
+                try:
+                    # 获取所有已暂存的文件
+                    staged_files = []
+                    for item in self.repo.index.entries:
+                        staged_files.append(item[0])
+                    # 检查未跟踪的文件
+                    for untracked in self.repo.untracked_files:
+                        if 'news_data' in untracked:
+                            staged_files.append(untracked)
+                    
+                    news_files = [f for f in staged_files if 'news_data' in str(f)]
+                    if news_files:
+                        logger.info(f"准备提交 {len(news_files)} 个新闻数据文件: {news_files[:5]}...")
+                    else:
+                        logger.warning("未找到news_data文件，请检查文件是否被正确创建")
+                except Exception as e:
+                    logger.debug(f"检查文件列表时出错: {e}")
                 
                 # 创建提交
                 commit_message = f"自动更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 self.repo.index.commit(commit_message)
                 logger.info(f"创建提交: {commit_message}")
+                
+                # 列出本次提交的文件
+                try:
+                    commit = self.repo.head.commit
+                    changed_files = [item.a_path for item in commit.diff(commit.parents[0] if commit.parents else None)]
+                    logger.info(f"本次提交包含 {len(changed_files)} 个文件")
+                except:
+                    pass
                 
                 # 推送到GitHub (origin)
                 try:
@@ -698,30 +728,54 @@ class GitManager:
                             # 推送到master分支
                             try:
                                 # 确保当前在master分支
-                                if self.repo.active_branch.name != 'master':
+                                current_branch_name = self.repo.active_branch.name
+                                if current_branch_name != 'master':
+                                    logger.info(f"当前分支是 {current_branch_name}，切换到master分支...")
                                     try:
                                         self.repo.head.reference = self.repo.heads.master
+                                        logger.info("已切换到master分支")
                                     except:
                                         # 如果master分支不存在，创建它
+                                        logger.info("创建master分支...")
                                         self.repo.create_head('master', self.repo.head.commit)
                                         self.repo.head.reference = self.repo.heads.master
+                                        logger.info("已创建并切换到master分支")
+                                
+                                # 检查本次提交包含的文件
+                                try:
+                                    commit = self.repo.head.commit
+                                    tree = commit.tree
+                                    all_files = [item.path for item in tree.traverse()]
+                                    news_files = [f for f in all_files if 'news_data' in f]
+                                    logger.info(f"本次提交包含 {len(all_files)} 个文件，其中 {len(news_files)} 个新闻文件")
+                                    if news_files:
+                                        logger.info(f"新闻文件: {news_files[:3]}...")
+                                except:
+                                    pass
                                 
                                 # 使用git命令设置上游并推送到master分支
+                                logger.info("正在推送到GitHub master分支...")
                                 self.repo.git.push('-u', 'origin', 'master')
+                                logger.info("✓ 成功推送到GitHub (master分支)")
                             except Exception as push_error:
+                                logger.warning(f"推送到master分支失败: {push_error}")
                                 # 如果设置上游失败，尝试直接推送
                                 try:
+                                    logger.info("尝试直接推送到master分支...")
                                     self.repo.git.push('origin', 'master')
+                                    logger.info("✓ 成功推送到GitHub (master分支)")
                                 except Exception as push_error2:
                                     # 如果还是失败，尝试force push（仅在首次推送时）
                                     logger.warning(f"常规推送失败: {push_error2}")
                                     try:
+                                        logger.info("尝试强制推送到master分支...")
                                         self.repo.git.push('-f', 'origin', 'master')
-                                        logger.info("使用强制推送完成首次推送")
-                                    except:
+                                        logger.info("✓ 使用强制推送完成首次推送 (master分支)")
+                                    except Exception as push_error3:
+                                        logger.error(f"所有推送方式都失败: {push_error3}")
                                         # 最后尝试默认推送
                                         origin.push()
-                            logger.info("✓ 成功推送到GitHub (master分支)")
+                                        logger.info("✓ 使用默认方式推送到GitHub")
                             
                             # 恢复原始URL（避免在配置中保存token）
                             if push_url != original_url:
