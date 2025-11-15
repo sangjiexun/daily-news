@@ -299,7 +299,7 @@ class RepositoryManager:
                     'name': self.repo_name,
                     'description': 'Daily AI and Web3 News Collection - 每日AI和Web3资讯收集',
                     'private': False,
-                    'auto_init': False,
+                    'auto_init': True,  # 自动初始化仓库，创建README
                     'has_issues': True,
                     'has_projects': False,
                     'has_wiki': False
@@ -504,18 +504,21 @@ class GitManager:
         if gitee_url:
             try:
                 gitee_remote = None
+                # 准备带token的Gitee URL（避免每次推送时输入密码）
+                gitee_url_with_token = self._prepare_push_url(gitee_url, self.gitee_token) if self.gitee_token else gitee_url
+                
                 try:
                     gitee_remote = self.repo.remote('gitee')
-                    # 如果URL不同，更新它
-                    if gitee_remote.url != gitee_url:
-                        gitee_remote.set_url(gitee_url)
-                        logger.info(f"更新gitee远程仓库URL: {gitee_url}")
+                    # 如果URL不同，更新它（使用带token的URL）
+                    if gitee_remote.url != gitee_url_with_token:
+                        gitee_remote.set_url(gitee_url_with_token)
+                        logger.info(f"更新gitee远程仓库URL（已包含token）")
                     else:
-                        logger.info(f"gitee远程仓库已配置: {gitee_url}")
+                        logger.info(f"gitee远程仓库已配置（已包含token）")
                 except:
-                    # 如果不存在，创建它
-                    gitee_remote = self.repo.create_remote('gitee', gitee_url)
-                    logger.info(f"创建gitee远程仓库: {gitee_url}")
+                    # 如果不存在，创建它（使用带token的URL）
+                    gitee_remote = self.repo.create_remote('gitee', gitee_url_with_token)
+                    logger.info(f"创建gitee远程仓库（已包含token）")
             except Exception as e:
                 logger.warning(f"配置Gitee远程仓库失败: {e}")
     
@@ -643,6 +646,24 @@ class GitManager:
                             if push_url != original_url:
                                 origin.set_url(push_url)
                             
+                            # 首次推送前，如果远程仓库有内容（auto_init创建的），先拉取
+                            try:
+                                # 检查远程是否有内容
+                                origin.fetch()
+                                remote_refs = list(origin.refs)
+                                if remote_refs:
+                                    # 远程有内容，需要先拉取并合并
+                                    logger.info("检测到远程仓库有初始内容，正在拉取并合并...")
+                                    try:
+                                        self.repo.git.pull('origin', 'main', '--allow-unrelated-histories', '--no-edit')
+                                    except:
+                                        try:
+                                            self.repo.git.pull('origin', 'master', '--allow-unrelated-histories', '--no-edit')
+                                        except:
+                                            logger.warning("拉取远程内容失败，尝试强制推送")
+                            except Exception as fetch_error:
+                                logger.debug(f"拉取远程内容: {fetch_error}")
+                            
                             # 首次推送需要指定分支
                             try:
                                 # 获取当前分支名
@@ -654,9 +675,16 @@ class GitManager:
                                 try:
                                     current_branch = self.repo.active_branch.name
                                     self.repo.git.push('origin', current_branch)
-                                except:
-                                    # 最后尝试默认推送
-                                    origin.push()
+                                except Exception as push_error2:
+                                    # 如果还是失败，尝试force push（仅在首次推送时）
+                                    logger.warning(f"常规推送失败: {push_error2}")
+                                    try:
+                                        current_branch = self.repo.active_branch.name
+                                        self.repo.git.push('-f', 'origin', current_branch)
+                                        logger.info("使用强制推送完成首次推送")
+                                    except:
+                                        # 最后尝试默认推送
+                                        origin.push()
                             logger.info("✓ 成功推送到GitHub")
                             
                             # 恢复原始URL（避免在配置中保存token）
@@ -698,36 +726,31 @@ class GitManager:
                             return
                     
                     if gitee_remote:
-                        original_gitee_url = gitee_remote.url
+                        # 确保URL中包含token（避免提示输入密码）
+                        current_url = gitee_remote.url
+                        if self.gitee_token and '@' not in current_url:
+                            # URL中没有token，添加token
+                            push_url = self._prepare_push_url(current_url, self.gitee_token)
+                            gitee_remote.set_url(push_url)
+                            logger.debug("Gitee URL已更新为包含token的版本")
                         
-                        if self.gitee_token:
-                            # 准备带token的URL
-                            push_url = self._prepare_push_url(original_gitee_url, self.gitee_token)
-                            if push_url != original_gitee_url:
-                                gitee_remote.set_url(push_url)
-                            
-                            # 首次推送需要指定分支
+                        # 首次推送需要指定分支
+                        try:
+                            # 获取当前分支名
+                            current_branch = self.repo.active_branch.name
+                            # 使用git命令设置上游并推送
+                            self.repo.git.push('-u', 'gitee', current_branch)
+                        except Exception as push_error:
+                            # 如果设置上游失败，尝试直接推送
                             try:
-                                # 获取当前分支名
                                 current_branch = self.repo.active_branch.name
-                                # 使用git命令设置上游并推送
-                                self.repo.git.push('-u', 'gitee', current_branch)
-                            except Exception as push_error:
-                                # 如果设置上游失败，尝试直接推送
-                                try:
-                                    current_branch = self.repo.active_branch.name
-                                    self.repo.git.push('gitee', current_branch)
-                                except:
-                                    # 最后尝试默认推送
-                                    gitee_remote.push()
-                            logger.info("成功推送到Gitee")
-                            
-                            # 恢复原始URL
-                            if push_url != original_gitee_url:
-                                gitee_remote.set_url(original_gitee_url)
-                        else:
-                            gitee_remote.push()
-                            logger.info("成功推送到Gitee（使用已保存的凭据）")
+                                self.repo.git.push('gitee', current_branch)
+                            except:
+                                # 最后尝试默认推送
+                                gitee_remote.push()
+                        logger.info("✓ 成功推送到Gitee")
+                        
+                        # 注意：不恢复原始URL，保持带token的URL，避免下次推送时输入密码
                 except Exception as e:
                     logger.error(f"推送到Gitee失败: {e}")
             else:
