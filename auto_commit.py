@@ -452,6 +452,58 @@ class RepositoryManager:
             logger.error(f"创建Gitee仓库异常: {e}")
             return None
     
+    def _map_gitee_to_github(self, gitee_url):
+        """从Gitee URL映射到GitHub URL"""
+        if not gitee_url:
+            return None
+        
+        try:
+            # 从Gitee URL提取用户名和仓库名
+            # 格式: https://gitee.com/username/repo.git
+            if 'gitee.com' in gitee_url:
+                parts = gitee_url.replace('.git', '').split('gitee.com/')
+                if len(parts) > 1:
+                    repo_path = parts[1]
+                    # 提取仓库名（可能是 username/repo 或直接是 repo）
+                    if '/' in repo_path:
+                        repo_name = repo_path.split('/')[-1]
+                    else:
+                        repo_name = repo_path
+                    
+                    # 获取GitHub用户名
+                    github_username = self.get_github_username()
+                    if github_username:
+                        # 使用相同的仓库名，但使用GitHub用户名
+                        github_url = f"https://github.com/{github_username}/{repo_name}.git"
+                        logger.info(f"从Gitee URL映射到GitHub: {gitee_url} -> {github_url}")
+                        return github_url
+        except Exception as e:
+            logger.debug(f"映射Gitee到GitHub失败: {e}")
+        return None
+    
+    def _map_github_to_gitee(self, github_url):
+        """从GitHub URL映射到Gitee URL"""
+        if not github_url:
+            return None
+        
+        try:
+            # 从GitHub URL提取用户名和仓库名
+            # 格式: https://github.com/username/repo.git
+            if 'github.com' in github_url:
+                parts = github_url.replace('.git', '').split('github.com/')
+                if len(parts) > 1:
+                    repo_path = parts[1]
+                    # 获取Gitee用户名
+                    gitee_username = self.get_gitee_username()
+                    if gitee_username:
+                        # 使用相同的仓库名，但使用Gitee用户名
+                        gitee_url = f"https://gitee.com/{gitee_username}/{self.repo_name}.git"
+                        logger.info(f"从GitHub URL映射到Gitee: {github_url} -> {gitee_url}")
+                        return gitee_url
+        except Exception as e:
+            logger.debug(f"映射GitHub到Gitee失败: {e}")
+        return None
+    
     def ensure_repos_exist(self):
         """确保GitHub和Gitee仓库存在，如果不存在则创建"""
         github_url = None
@@ -460,16 +512,7 @@ class RepositoryManager:
         logger.info("=" * 50)
         logger.info("开始检查并创建远程仓库...")
         
-        if self.github_token:
-            logger.info("检查GitHub仓库...")
-            github_url = self.create_github_repo()
-            if github_url:
-                logger.info(f"✓ GitHub仓库准备就绪: {github_url}")
-            else:
-                logger.warning("✗ GitHub仓库创建或检查失败")
-        else:
-            logger.warning("GitHub token未提供，跳过GitHub仓库检查")
-        
+        # 优先创建Gitee仓库（如果提供了Gitee token）
         if self.gitee_token:
             logger.info("检查Gitee仓库...")
             gitee_url = self.create_gitee_repo()
@@ -479,6 +522,42 @@ class RepositoryManager:
                 logger.warning("✗ Gitee仓库创建或检查失败")
         else:
             logger.warning("Gitee token未提供，跳过Gitee仓库检查")
+        
+        # 创建或映射GitHub仓库
+        if self.github_token:
+            logger.info("检查GitHub仓库...")
+            github_url = self.create_github_repo()
+            if github_url:
+                logger.info(f"✓ GitHub仓库准备就绪: {github_url}")
+            else:
+                logger.warning("✗ GitHub仓库创建或检查失败")
+                # 如果GitHub创建失败，尝试从Gitee映射
+                if gitee_url:
+                    logger.info("尝试从Gitee URL映射到GitHub...")
+                    mapped_github_url = self._map_gitee_to_github(gitee_url)
+                    if mapped_github_url:
+                        github_url = mapped_github_url
+                        logger.info(f"✓ 已映射GitHub仓库: {github_url}")
+        else:
+            logger.warning("GitHub token未提供，跳过GitHub仓库检查")
+            # 如果没有GitHub token但有Gitee URL，尝试映射
+            if gitee_url:
+                logger.info("尝试从Gitee URL映射到GitHub...")
+                mapped_github_url = self._map_gitee_to_github(gitee_url)
+                if mapped_github_url:
+                    github_url = mapped_github_url
+                    logger.info(f"✓ 已映射GitHub仓库: {github_url}")
+        
+        # 如果GitHub存在但Gitee不存在，尝试映射
+        if github_url and not gitee_url and self.gitee_token:
+            logger.info("尝试从GitHub URL映射到Gitee...")
+            mapped_gitee_url = self._map_github_to_gitee(github_url)
+            if mapped_gitee_url:
+                # 检查映射的Gitee仓库是否存在
+                gitee_url = self.create_gitee_repo()
+                if not gitee_url:
+                    gitee_url = mapped_gitee_url
+                    logger.info(f"✓ 已映射Gitee仓库: {gitee_url}")
         
         logger.info("=" * 50)
         return github_url, gitee_url
@@ -859,27 +938,39 @@ class GitManager:
                 
                 # 推送到Gitee
                 try:
-                    remotes = self._run_git('remote', 'list', check=False)
+                    remotes = self._run_git('remote', 'list', check=False) or ""
                     if 'gitee' not in remotes:
-                        # 如果没有gitee远程，尝试从origin推断
+                        # 如果没有gitee远程，尝试从origin推断或使用仓库管理器映射
                         try:
                             origin_url = self._run_git('remote', 'get-url', 'origin', check=False)
-                            # 如果是GitHub URL，尝试转换为Gitee URL
+                            # 如果是GitHub URL，尝试映射到Gitee URL
                             if 'github.com' in origin_url.lower():
-                                # 提取用户名和仓库名
-                                parts = origin_url.replace('.git', '').split('github.com/')
-                                if len(parts) > 1:
-                                    repo_path = parts[1]
-                                    gitee_url = f'https://gitee.com/{repo_path}.git'
+                                # 使用仓库管理器的映射方法
+                                mapped_gitee_url = self.repo_manager._map_github_to_gitee(origin_url)
+                                if mapped_gitee_url:
                                     # 准备带token的URL
-                                    gitee_url_with_token = self._prepare_push_url(gitee_url, self.gitee_token) if self.gitee_token else gitee_url
+                                    gitee_url_with_token = self._prepare_push_url(mapped_gitee_url, self.gitee_token) if self.gitee_token else mapped_gitee_url
                                     self._run_git('remote', 'add', 'gitee', gitee_url_with_token)
-                                    logger.info(f"自动创建gitee远程仓库（已包含token）")
+                                    logger.info(f"自动创建gitee远程仓库（已从GitHub映射，已包含token）")
+                                else:
+                                    # 如果映射失败，尝试直接转换（使用相同的用户名）
+                                    parts = origin_url.replace('.git', '').split('github.com/')
+                                    if len(parts) > 1:
+                                        repo_path = parts[1]
+                                        # 提取仓库名
+                                        repo_name = repo_path.split('/')[-1] if '/' in repo_path else repo_path
+                                        # 使用Gitee用户名
+                                        gitee_username = self.repo_manager.get_gitee_username()
+                                        if gitee_username:
+                                            gitee_url = f'https://gitee.com/{gitee_username}/{repo_name}.git'
+                                            gitee_url_with_token = self._prepare_push_url(gitee_url, self.gitee_token) if self.gitee_token else gitee_url
+                                            self._run_git('remote', 'add', 'gitee', gitee_url_with_token)
+                                            logger.info(f"自动创建gitee远程仓库（已包含token）")
                             else:
                                 logger.info("未找到gitee远程仓库，且无法从origin推断，跳过Gitee推送")
                                 return
-                        except:
-                            logger.info("无法获取origin URL，跳过Gitee推送")
+                        except Exception as e:
+                            logger.warning(f"无法创建gitee远程仓库: {e}")
                             return
                     
                     # 确保URL中包含token
