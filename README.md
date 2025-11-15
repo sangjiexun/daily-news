@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 # 自动化Git提交和新闻收集程序
 
 这是一个Python后台程序，可以自动收集AI和Web3相关的最新新闻，并每日自动提交到GitHub和Gitee。
@@ -141,6 +142,10 @@ pythonw auto_commit.py
 
 MIT License
 
+=======
+# daily-news
+Daily AI and Web3 News Collection - 每日AI和Web3资讯收集
+>>>>>>> 6bcddd0632dacf9aa62d0b173911762b5155a5d0
 =======
 # daily-news
 Daily AI and Web3 News Collection - 每日AI和Web3资讯收集
