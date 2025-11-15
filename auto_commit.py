@@ -430,12 +430,19 @@ class GitManager:
                         logger.info(f"更新origin远程仓库URL: {github_url}")
                     else:
                         logger.info(f"origin远程仓库已配置: {github_url}")
-                except:
+                except Exception as remote_error:
                     # 如果不存在，创建它
-                    origin = self.repo.create_remote('origin', github_url)
-                    logger.info(f"创建origin远程仓库: {github_url}")
+                    try:
+                        origin = self.repo.create_remote('origin', github_url)
+                        logger.info(f"创建origin远程仓库: {github_url}")
+                    except Exception as create_error:
+                        logger.warning(f"创建origin远程仓库失败: {create_error}")
+                        raise
             except Exception as e:
                 logger.warning(f"配置GitHub远程仓库失败: {e}")
+                logger.warning("将在推送时尝试重新创建")
+        else:
+            logger.warning("GitHub仓库URL为空，跳过origin远程仓库配置")
         
         # 配置Gitee远程仓库
         if gitee_url:
@@ -536,8 +543,25 @@ class GitManager:
                 
                 # 推送到GitHub (origin)
                 try:
-                    origin = self.repo.remote('origin')
-                    original_url = origin.url
+                    # 检查origin远程仓库是否存在
+                    try:
+                        origin = self.repo.remote('origin')
+                        original_url = origin.url
+                    except:
+                        # origin不存在，尝试重新创建
+                        logger.warning("origin远程仓库不存在，尝试重新创建...")
+                        github_url, _ = self.repo_manager.ensure_repos_exist()
+                        if github_url:
+                            try:
+                                origin = self.repo.create_remote('origin', github_url)
+                                original_url = github_url
+                                logger.info(f"重新创建origin远程仓库: {github_url}")
+                            except Exception as e:
+                                logger.error(f"无法创建origin远程仓库: {e}")
+                                raise
+                        else:
+                            logger.error("无法获取GitHub仓库URL，跳过GitHub推送")
+                            raise Exception("GitHub仓库URL不可用")
                     
                     # 判断是否是GitHub仓库
                     is_github = 'github.com' in original_url.lower()
