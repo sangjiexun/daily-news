@@ -311,15 +311,13 @@ class RepositoryManager:
             elif response.status_code == 404:
                 # 仓库不存在，创建新仓库
                 logger.info(f"正在创建GitHub仓库: {self.repo_name} (用户: {username})")
+                
+                # 简化创建数据（某些字段可能导致403）
                 create_data = {
                     'name': self.repo_name,
                     'description': 'Daily AI and Web3 News Collection - 每日AI和Web3资讯收集',
                     'private': False,
-                    'auto_init': True,  # 自动初始化仓库，创建README
-                    'has_issues': True,
-                    'has_projects': False,
-                    'has_wiki': False,
-                    'default_branch': 'master'  # 使用master作为默认分支
+                    'auto_init': True  # 自动初始化仓库，创建README
                 }
                 create_url = 'https://api.github.com/user/repos'
                 
@@ -346,6 +344,8 @@ class RepositoryManager:
                         if "name already exists" in error_msg.lower():
                             logger.info("仓库可能已存在，尝试获取仓库URL...")
                             return repo_url
+                        if create_response.status_code == 403:
+                            logger.error("提示: Token可能没有 'repo' 权限")
                         return None
                 else:
                     error_msg = create_response.text
