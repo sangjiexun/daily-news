@@ -572,22 +572,32 @@ class GitManager:
         if github_url:
             try:
                 # 检查origin远程是否存在
-                remotes = self._run_git('remote', 'list', check=False)
+                remotes = self._run_git('remote', 'list', check=False) or ""
                 if 'origin' in remotes:
                     # 检查URL是否相同
-                    current_url = self._run_git('remote', 'get-url', 'origin', check=False)
-                    if current_url != github_url:
+                    try:
+                        current_url = self._run_git('remote', 'get-url', 'origin', check=False)
+                        if current_url and current_url != github_url:
+                            self._run_git('remote', 'set-url', 'origin', github_url)
+                            logger.info(f"更新origin远程仓库URL: {github_url}")
+                        else:
+                            logger.info(f"origin远程仓库已配置: {github_url}")
+                    except:
+                        # 如果获取URL失败，尝试更新
                         self._run_git('remote', 'set-url', 'origin', github_url)
                         logger.info(f"更新origin远程仓库URL: {github_url}")
-                    else:
-                        logger.info(f"origin远程仓库已配置: {github_url}")
                 else:
                     # 如果不存在，创建它
                     self._run_git('remote', 'add', 'origin', github_url)
                     logger.info(f"创建origin远程仓库: {github_url}")
             except Exception as e:
                 logger.warning(f"配置GitHub远程仓库失败: {e}")
-                logger.warning("将在推送时尝试重新创建")
+                # 如果添加失败，可能是已存在，尝试更新
+                try:
+                    self._run_git('remote', 'set-url', 'origin', github_url, check=False)
+                    logger.info(f"已更新origin远程仓库URL: {github_url}")
+                except:
+                    logger.warning("将在推送时尝试重新创建")
         else:
             logger.warning("GitHub仓库URL为空，跳过origin远程仓库配置")
         
@@ -598,21 +608,32 @@ class GitManager:
                 gitee_url_with_token = self._prepare_push_url(gitee_url, self.gitee_token) if self.gitee_token else gitee_url
                 
                 # 检查gitee远程是否存在
-                remotes = self._run_git('remote', 'list', check=False)
+                remotes = self._run_git('remote', 'list', check=False) or ""
                 if 'gitee' in remotes:
                     # 检查URL是否相同
-                    current_url = self._run_git('remote', 'get-url', 'gitee', check=False)
-                    if current_url != gitee_url_with_token:
+                    try:
+                        current_url = self._run_git('remote', 'get-url', 'gitee', check=False)
+                        if current_url and current_url != gitee_url_with_token:
+                            self._run_git('remote', 'set-url', 'gitee', gitee_url_with_token)
+                            logger.info(f"更新gitee远程仓库URL（已包含token）")
+                        else:
+                            logger.info(f"gitee远程仓库已配置（已包含token）")
+                    except:
+                        # 如果获取URL失败，尝试更新
                         self._run_git('remote', 'set-url', 'gitee', gitee_url_with_token)
                         logger.info(f"更新gitee远程仓库URL（已包含token）")
-                    else:
-                        logger.info(f"gitee远程仓库已配置（已包含token）")
                 else:
                     # 如果不存在，创建它（使用带token的URL）
                     self._run_git('remote', 'add', 'gitee', gitee_url_with_token)
                     logger.info(f"创建gitee远程仓库（已包含token）")
             except Exception as e:
                 logger.warning(f"配置Gitee远程仓库失败: {e}")
+                # 如果添加失败，可能是已存在，尝试更新
+                try:
+                    self._run_git('remote', 'set-url', 'gitee', gitee_url_with_token, check=False)
+                    logger.info(f"已更新gitee远程仓库URL（已包含token）")
+                except:
+                    logger.warning("Gitee远程仓库配置失败，将在推送时处理")
     
     def _prepare_push_url(self, url, token):
         """准备带token的推送URL"""
