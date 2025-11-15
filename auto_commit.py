@@ -580,6 +580,18 @@ class GitManager:
             untracked_files = [item for item in self.repo.untracked_files]
             has_changes = self.repo.is_dirty() or len(untracked_files) > 0
             
+            # 检查news_data目录是否有文件需要提交
+            news_data_dir = Path("news_data")
+            if news_data_dir.exists():
+                news_files = list(news_data_dir.glob("*.json"))
+                if news_files:
+                    logger.info(f"发现 {len(news_files)} 个新闻数据文件")
+                    # 检查这些文件是否在Git中
+                    for news_file in news_files:
+                        if str(news_file) in untracked_files:
+                            has_changes = True
+                            logger.info(f"发现未跟踪的新闻文件: {news_file}")
+            
             # 如果是空仓库，创建README文件作为初始提交
             try:
                 # 检查是否有提交历史
@@ -705,25 +717,39 @@ class GitManager:
                             # 确保使用master分支
                             self._ensure_master_branch()
                             
-                            # 首次推送前，如果远程仓库有内容（auto_init创建的），先拉取
+                            # 首次推送前，检查远程分支并拉取合并
                             try:
                                 # 检查远程是否有内容
                                 origin.fetch()
                                 remote_refs = list(origin.refs)
+                                
+                                # 检查远程是否有main或master分支
+                                has_main = any('main' in str(ref) for ref in remote_refs)
+                                has_master = any('master' in str(ref) for ref in remote_refs)
+                                
                                 if remote_refs:
-                                    # 远程有内容，需要先拉取并合并
-                                    logger.info("检测到远程仓库有初始内容，正在拉取并合并...")
-                                    try:
-                                        # 优先使用master分支
-                                        self.repo.git.pull('origin', 'master', '--allow-unrelated-histories', '--no-edit')
-                                    except:
+                                    logger.info(f"检测到远程仓库有内容 (main: {has_main}, master: {has_master})")
+                                    # 如果远程是main分支，我们需要拉取并合并
+                                    if has_main:
+                                        logger.info("远程使用main分支，正在拉取并合并到本地master分支...")
                                         try:
-                                            # 如果master不存在，尝试main
-                                            self.repo.git.pull('origin', 'main', '--allow-unrelated-histories', '--no-edit')
+                                            # 拉取main分支的内容
+                                            self.repo.git.fetch('origin', 'main')
+                                            # 合并到当前分支（master）
+                                            self.repo.git.merge('origin/main', '--allow-unrelated-histories', '--no-edit')
+                                            logger.info("✓ 已合并远程main分支内容到本地master分支")
+                                        except Exception as merge_error:
+                                            logger.warning(f"合并远程main分支失败: {merge_error}")
+                                            # 如果合并失败，继续推送（会创建新的master分支）
+                                    elif has_master:
+                                        # 远程有master分支，正常拉取
+                                        try:
+                                            self.repo.git.pull('origin', 'master', '--allow-unrelated-histories', '--no-edit')
+                                            logger.info("✓ 已拉取远程master分支内容")
                                         except:
-                                            logger.warning("拉取远程内容失败，尝试强制推送")
+                                            logger.warning("拉取远程master分支失败，继续推送")
                             except Exception as fetch_error:
-                                logger.debug(f"拉取远程内容: {fetch_error}")
+                                logger.debug(f"检查远程内容: {fetch_error}")
                             
                             # 推送到master分支
                             try:
@@ -753,29 +779,34 @@ class GitManager:
                                 except:
                                     pass
                                 
-                                # 使用git命令设置上游并推送到master分支
+                                # 推送到master分支（如果远程是main，也会创建master分支）
                                 logger.info("正在推送到GitHub master分支...")
-                                self.repo.git.push('-u', 'origin', 'master')
-                                logger.info("✓ 成功推送到GitHub (master分支)")
-                            except Exception as push_error:
-                                logger.warning(f"推送到master分支失败: {push_error}")
-                                # 如果设置上游失败，尝试直接推送
                                 try:
-                                    logger.info("尝试直接推送到master分支...")
-                                    self.repo.git.push('origin', 'master')
+                                    self.repo.git.push('-u', 'origin', 'master')
                                     logger.info("✓ 成功推送到GitHub (master分支)")
-                                except Exception as push_error2:
-                                    # 如果还是失败，尝试force push（仅在首次推送时）
-                                    logger.warning(f"常规推送失败: {push_error2}")
+                                except Exception as push_error:
+                                    # 如果推送失败，可能是远程只有main分支
+                                    logger.warning(f"推送到master分支失败: {push_error}")
+                                    # 尝试推送到main分支（如果远程只有main）
+                                    logger.info("尝试推送到main分支...")
                                     try:
+                                        self.repo.git.push('-u', 'origin', 'main')
+                                        logger.info("✓ 成功推送到GitHub (main分支)")
+                                    except Exception as push_main_error:
+                                        # 如果main也失败，尝试强制推送到master
+                                        logger.warning(f"推送到main分支也失败: {push_main_error}")
                                         logger.info("尝试强制推送到master分支...")
-                                        self.repo.git.push('-f', 'origin', 'master')
-                                        logger.info("✓ 使用强制推送完成首次推送 (master分支)")
-                                    except Exception as push_error3:
-                                        logger.error(f"所有推送方式都失败: {push_error3}")
-                                        # 最后尝试默认推送
-                                        origin.push()
-                                        logger.info("✓ 使用默认方式推送到GitHub")
+                                        try:
+                                            self.repo.git.push('-f', 'origin', 'master')
+                                            logger.info("✓ 使用强制推送完成 (master分支)")
+                                        except Exception as force_error:
+                                            logger.error(f"所有推送方式都失败: {force_error}")
+                                            # 最后尝试默认推送
+                                            origin.push()
+                                            logger.info("✓ 使用默认方式推送到GitHub")
+                            except Exception as branch_error:
+                                logger.error(f"分支操作失败: {branch_error}")
+                                raise
                             
                             # 恢复原始URL（避免在配置中保存token）
                             if push_url != original_url:
@@ -892,20 +923,19 @@ def daily_task():
             logger.error("提示: 请检查Git令牌是否正确")
             return
         
-        # 如果有新文章，提交到Git
-        if has_new:
-            try:
-                logger.info("正在提交到Git...")
-                git_manager.commit_and_push()
-            except Exception as e:
-                logger.error(f"Git操作失败: {e}")
-        else:
-            logger.info("没有新文章，跳过Git提交")
-            # 即使没有新文章，也尝试提交一次（确保仓库已创建并初始化）
-            try:
-                git_manager.commit_and_push()
-            except Exception as e:
-                logger.debug(f"无更改时的Git操作: {e}")
+        # 每次运行都提交和推送（确保内容同步）
+        try:
+            if has_new:
+                logger.info("检测到新文章，正在提交到Git...")
+            else:
+                logger.info("未检测到新文章，但将检查并提交已有内容...")
+            
+            git_manager.commit_and_push()
+            logger.info("✓ Git提交和推送完成")
+        except Exception as e:
+            logger.error(f"Git操作失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         
         logger.info("每日任务完成")
         logger.info("=" * 50)
