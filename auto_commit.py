@@ -536,15 +536,15 @@ class GitManager:
         # 检查是否已经是Git仓库
         if not (self.repo_path / '.git').exists():
             logger.info("本地Git仓库不存在，正在初始化...")
-            self._run_git('init', '-b', 'master')
-            logger.info("成功初始化本地Git仓库（使用master分支）")
+            self._run_git('init', '-b', 'main')
+            logger.info("成功初始化本地Git仓库（使用main分支）")
         else:
             logger.info(f"Git仓库已存在: {self.repo_path}")
-            # 确保使用master分支
-            self._ensure_master_branch()
+            # 确保使用main分支
+            self._ensure_main_branch()
     
-    def _ensure_master_branch(self):
-        """确保使用master分支"""
+    def _ensure_main_branch(self):
+        """确保使用main分支"""
         try:
             # 获取当前分支
             current_branch = self._run_git('branch', '--show-current', check=False)
@@ -554,23 +554,23 @@ class GitManager:
                 self._run_git('commit', '--allow-empty', '-m', 'Initial commit', check=False)
                 current_branch = self._run_git('branch', '--show-current', check=False)
             
-            if current_branch and current_branch != 'master':
-                logger.info(f"当前分支是 {current_branch}，切换到master分支...")
-                # 检查master分支是否存在
-                branches = self._run_git('branch', '--list', 'master', check=False)
-                if 'master' in branches:
-                    # 切换到master分支
-                    self._run_git('checkout', 'master')
-                    logger.info("已切换到master分支")
+            if current_branch and current_branch != 'main':
+                logger.info(f"当前分支是 {current_branch}，切换到main分支...")
+                # 检查main分支是否存在
+                branches = self._run_git('branch', '--list', 'main', check=False) or ""
+                if 'main' in branches:
+                    # 切换到main分支
+                    self._run_git('checkout', 'main')
+                    logger.info("已切换到main分支")
                 else:
-                    # master分支不存在，创建它
-                    logger.info("创建master分支...")
-                    self._run_git('checkout', '-b', 'master')
-                    logger.info("已创建并切换到master分支")
-            elif not current_branch or current_branch == 'master':
-                logger.info("当前在master分支")
+                    # main分支不存在，创建它
+                    logger.info("创建main分支...")
+                    self._run_git('checkout', '-b', 'main')
+                    logger.info("已创建并切换到main分支")
+            elif not current_branch or current_branch == 'main':
+                logger.info("当前在main分支")
         except Exception as e:
-            logger.debug(f"确保master分支: {e}")
+            logger.debug(f"确保main分支: {e}")
     
     def _setup_remotes(self, github_url, gitee_url):
         """配置远程仓库"""
@@ -683,8 +683,8 @@ class GitManager:
     def commit_and_push(self):
         """提交并推送到Git和Gitee（使用git命令）"""
         try:
-            # 确保在master分支
-            self._ensure_master_branch()
+            # 确保在main分支
+            self._ensure_main_branch()
             
             # 检查是否有更改
             status_output = self._run_git('status', '--porcelain', check=False)
@@ -739,6 +739,9 @@ class GitManager:
                     has_changes = True
             
             if has_changes or not has_commits:
+                # 确保在main分支
+                self._ensure_main_branch()
+                
                 # 添加所有更改（包括所有代码文件）
                 self._run_git('add', '-A')
                 logger.info("已添加所有更改到暂存区")
@@ -787,56 +790,58 @@ class GitManager:
                         if push_url != original_url:
                             self._run_git('remote', 'set-url', 'origin', push_url)
                         
-                        # 确保使用master分支
-                        self._ensure_master_branch()
+                        # 确保使用main分支
+                        self._ensure_main_branch()
                         
                         # 首次推送前，检查远程分支并拉取合并
                         try:
                             # 获取远程分支信息
                             self._run_git('fetch', 'origin', check=False)
-                            remote_branches = self._run_git('branch', '-r', check=False)
+                            remote_branches = self._run_git('branch', '-r', check=False) or ""
                             
                             has_main = 'origin/main' in remote_branches
                             has_master = 'origin/master' in remote_branches
                             
                             if remote_branches:
                                 logger.info(f"检测到远程仓库有内容 (main: {has_main}, master: {has_master})")
-                                # 如果远程是main分支，我们需要拉取并合并
+                                # 优先使用main分支
                                 if has_main:
-                                    logger.info("远程使用main分支，正在拉取并合并到本地master分支...")
+                                    logger.info("远程使用main分支，正在拉取并合并到本地main分支...")
                                     try:
                                         self._run_git('fetch', 'origin', 'main', check=False)
                                         self._run_git('merge', 'origin/main', '--allow-unrelated-histories', '--no-edit', check=False)
-                                        logger.info("✓ 已合并远程main分支内容到本地master分支")
+                                        logger.info("✓ 已合并远程main分支内容到本地main分支")
                                     except Exception as merge_error:
                                         logger.warning(f"合并远程main分支失败: {merge_error}")
                                 elif has_master:
-                                    # 远程有master分支，正常拉取
+                                    # 远程有master分支，拉取并重命名为main
+                                    logger.info("远程使用master分支，正在拉取并合并到本地main分支...")
                                     try:
-                                        self._run_git('pull', 'origin', 'master', '--allow-unrelated-histories', '--no-edit', check=False)
-                                        logger.info("✓ 已拉取远程master分支内容")
+                                        self._run_git('fetch', 'origin', 'master', check=False)
+                                        self._run_git('merge', 'origin/master', '--allow-unrelated-histories', '--no-edit', check=False)
+                                        logger.info("✓ 已合并远程master分支内容到本地main分支")
                                     except:
                                         logger.warning("拉取远程master分支失败，继续推送")
                         except Exception as fetch_error:
                             logger.debug(f"检查远程内容: {fetch_error}")
                         
-                        # 推送到master分支
-                        logger.info("正在推送到GitHub master分支...")
+                        # 推送到main分支
+                        logger.info("正在推送到GitHub main分支...")
                         try:
-                            self._run_git('push', '-u', 'origin', 'master')
-                            logger.info("✓ 成功推送到GitHub (master分支)")
+                            self._run_git('push', '-u', 'origin', 'main')
+                            logger.info("✓ 成功推送到GitHub (main分支)")
                         except Exception as push_error:
-                            # 如果推送失败，可能是远程只有main分支
-                            logger.warning(f"推送到master分支失败，尝试推送到main分支...")
+                            # 如果推送失败，可能是远程只有master分支
+                            logger.warning(f"推送到main分支失败，尝试推送到master分支...")
                             try:
-                                self._run_git('push', '-u', 'origin', 'main')
-                                logger.info("✓ 成功推送到GitHub (main分支)")
-                            except Exception as push_main_error:
-                                # 如果main也失败，尝试强制推送到master
-                                logger.warning(f"推送到main分支也失败，尝试强制推送...")
+                                self._run_git('push', '-u', 'origin', 'master')
+                                logger.info("✓ 成功推送到GitHub (master分支)")
+                            except Exception as push_master_error:
+                                # 如果master也失败，尝试强制推送到main
+                                logger.warning(f"推送到master分支也失败，尝试强制推送...")
                                 try:
-                                    self._run_git('push', '-f', 'origin', 'master')
-                                    logger.info("✓ 使用强制推送完成 (master分支)")
+                                    self._run_git('push', '-f', 'origin', 'main')
+                                    logger.info("✓ 使用强制推送完成 (main分支)")
                                 except Exception as force_error:
                                     logger.error(f"所有推送方式都失败: {force_error}")
                         
@@ -845,7 +850,7 @@ class GitManager:
                             self._run_git('remote', 'set-url', 'origin', original_url)
                     elif is_github:
                         # 没有token，尝试直接推送
-                        self._run_git('push', 'origin', 'master', check=False)
+                        self._run_git('push', 'origin', 'main', check=False)
                         logger.info("✓ 成功推送到GitHub（使用已保存的凭据）")
                     else:
                         logger.warning(f"origin远程仓库不是GitHub，跳过GitHub推送: {original_url}")
@@ -886,12 +891,12 @@ class GitManager:
                     
                     # 推送到Gitee
                     try:
-                        self._run_git('push', '-u', 'gitee', 'master')
+                        self._run_git('push', '-u', 'gitee', 'main')
                         logger.info("✓ 成功推送到Gitee")
                     except Exception as push_error:
                         # 如果设置上游失败，尝试直接推送
                         try:
-                            self._run_git('push', 'gitee', 'master', check=False)
+                            self._run_git('push', 'gitee', 'main', check=False)
                             logger.info("✓ 成功推送到Gitee")
                         except:
                             logger.warning("推送到Gitee失败")
